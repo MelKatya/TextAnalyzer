@@ -1,29 +1,39 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Generator
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+import os
+from math import ceil
 
 
-def words_count(text: str, result: Dict[str, int], stop_words: List[str]) -> Dict[str, int]:
+TEMPLATE = re.compile(r'[^\d,\W]+[-]?\w*') # шаблон для поиска слов
+
+
+def words_count(lines: List[str], stop_words: List[str]) -> Dict[str, int]:
     """
-    Заполняет словарь частоты слов из строки текста.
+    Заполняет словарь частоты слов в списке строк текста.
 
     Args:
-        text (str): строка текста для анализа.
-        result (Dict[str, int]): существующий словарь частоты слов, который будет дополнен.
-        stop_words (List[str]): список стоп-слов.
+        lines (List[str]): список строк текста.
+        stop_words (List[str]): список стоп-слов, которые не учитываются в подсчете.
 
     Returns:
-        Dict[str, int]: обновленный словарь частоты слов.
+        Dict[str, int]: словарь частоты слов (слово: частота).
     """
 
-    template = re.compile(r'[^\d,\W]+[-]?\w*')
-    words_line = template.findall(text.lower())
+    result = {}
+    chunk_size = ceil(len(lines) / 10)
 
-    for word in set(words_line):
-        if word not in stop_words:
-            if result.get(word):
-                result[word] += words_line.count(word)
-            else:
-                result[word] = words_line.count(word)
+    for start in range(0, len(lines), chunk_size):
+        chunk = lines[start:start + chunk_size]
+        # Объединяем строки, чтобы разом обрабатывать большее количество слов
+        chunk_text = ' '.join(chunk).lower()
+        words_line = TEMPLATE.findall(chunk_text)
+
+        for word in words_line:
+            if word not in stop_words:
+                result[word] = result.get(word, 0) + 1
+
     return result
 
 
@@ -102,6 +112,79 @@ def fill_stop_words() -> List[str]:
             print('Неверно сделан выбор. Введите 1 или 0.')
 
 
+def read_lines_chunks(file_path: str, chunk_size: int) -> Generator:
+    """
+    Генерирует чанки строк из текстового файла.
+
+
+    Args:
+        file_path (str): путь к текстовому файлу.
+        chunk_size (int): размер чанка (количество строк).
+
+    Returns:
+        Generator : чанк строк.
+    """
+
+    with open(file_path, 'r', encoding='utf-8') as file:
+        chunk = []
+        for line in file:
+            chunk.append(line.strip())
+            if len(chunk) == chunk_size:
+                yield chunk
+                chunk = []
+        if chunk:
+            yield chunk
+
+
+def merge_results(results: List) -> Dict[str, int]:
+    """
+    Объединяет частотные словари в один.
+
+    Args:
+        results (List): список частотных словарей.
+
+    Returns:
+        Dict[str, int]: объединенные частотные словари.
+    """
+
+    final_result = {}
+    for result in results:  # Перебираем частотные словари
+        for word, count in result.items():  # Обновляем итоговый словарь
+            final_result[word] = final_result.get(word, 0) + count
+
+    return final_result
+
+
+def process_chunk(chunk: list[str], stop_words: list[str]) -> Dict[str, int]:
+    """
+     Передает stop_words в функцию words_count.
+
+    Args:
+        chunk (list[str]): один чанк (список строк).
+        stop_words (list[str]): список стоп-слов.
+
+    Returns:
+        Dict[str, int]: частотный словарь одного чанка.
+    """
+    return words_count(chunk, stop_words)
+
+
+def calculate_avg_line_size(file_path: str, num_samples: int = 100) -> int:
+    """
+    Рассчитывает среднюю длину строк в файле на основе выборки.
+
+    Args:
+        file_path (str): путь к файлу.
+        num_samples (int): количество строк для выборки.
+
+    Returns:
+        int: средняя длина строк в символах.
+    """
+    with open(file_path, 'r', encoding='utf-8') as f:
+        sample_lines = [len(f.readline()) for _ in range(num_samples)]
+    return sum(sample_lines) // len(sample_lines)
+
+
 def load_file(stop_words: List[str]) -> Dict[str, int]:
     """
     Загружает текст из файла и подсчитывает частоту слов.
@@ -113,20 +196,37 @@ def load_file(stop_words: List[str]) -> Dict[str, int]:
         Dict[str, int]: словарь частоты слов из файла.
     """
 
-    words = dict()
-    my_file = r'C:\TextAnalyzer\allpart_238.txt'
-    file_path = input('\nУкажите полный путь до файла: ')
+    file_path = input('\nУкажите полный путь до файла в формате .txt: ')
+    while not (os.path.isfile(os.path.abspath(file_path)) and file_path.endswith('.txt')):
+        # my_file = r'C:\TextAnalyzer\allpart_6.txt'
+        print('Неверно указан путь до файла или нет к нему доступа. Повторите ввод!')
+        file_path = input('\nУкажите полный путь до файла .txt: ')
 
-    try:
-        with open(my_file, 'r', encoding='utf-8') as file:
-            for line in file:
-                words = words_count(line, words, stop_words)
+    file_size = os.path.getsize(file_path)
+    file_size_threshold = 5 * 1024 * 1024  # 5 MB
 
-        return words
+    # Если файл больше 5MB, то он разбивается на чанки и обрабатывает их параллельно
+    if file_size > file_size_threshold:
+        avg_line_size = calculate_avg_line_size(file_path)
+        chunk_size = ceil(file_size / (40 * avg_line_size))
+        chunks = read_lines_chunks(file_path, chunk_size=chunk_size)
 
-    except (FileNotFoundError, FileExistsError):
-        print('Неверно указан путь до файла или нет к нему доступа.')
-        return load_file(stop_words)
+        # Для передачи стоп-слов в функцию подсчета слов
+        process_with_stopwords = partial(process_chunk, stop_words=stop_words)
+
+        with ProcessPoolExecutor(max_workers=None) as executor:
+            # Параллельно обрабатываем чанки
+            results = list(executor.map(process_with_stopwords, chunks))
+
+        # Объединяем результаты
+        return merge_results(results)
+
+    else:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            all_text = f.readlines()
+        result = words_count(all_text, stop_words)
+
+        return result
 
 
 def write_text(stop_words: List[str]) -> Dict[str, int]:
@@ -140,14 +240,15 @@ def write_text(stop_words: List[str]) -> Dict[str, int]:
         Dict[str, int]: словарь из слов частоты слов из текста.
     """
 
-    words = dict()
-    original_text = input('\nВведите текст для анализа:\n')
+    print('\nВведите текст для анализа:\n'
+          '(для прекращения ввода напишите на пустой строке _1 и нажмите enter):')
+    original_text = "\n".join(iter(input, "_1"))
 
     while not original_text:
         print('Текст не может быть пустым. Повторите ввод!')
-        original_text = input('Введите текст для анализа:\n')
+        original_text = "\n".join(iter(input, "_1"))
 
-    words = words_count(original_text, words, stop_words)
+    words = words_count(original_text.split('\n'), stop_words)
     return words
 
 
@@ -186,8 +287,8 @@ def top_words(words: List, reverse: bool) -> None:
 
     while True:
         print('\nКак поступить с топ-10 слов?\n'
-              '\n1 - Показать на экране;'
-              '\n2 - Не выводить.')
+              '\t1 - Показать на экране;\n'
+              '\t2 - Не выводить.')
         user_choice = input('Ввод: ')
 
         if user_choice == '1':
@@ -238,20 +339,22 @@ def frequency_thresholds(words: Dict[str, int]) -> List:
             print('Ошибка при вводе числа. Число должно быть больше или равно 0 и содержать исключительно цифры')
 
 
-words_dict = main_menu()
-filtered_words = frequency_thresholds(words_dict)
-reverse_flag = selection_sorting()
-# Если reverse_flag == True, то (-1)^1, т.е. сортировка производится по убыванию, иначе - по возрастанию
-sorted_words = sorted(filtered_words, key=lambda w: ((-1) ** reverse_flag * w[1], w[0]))
+if __name__ == "__main__":
+    words_dict = main_menu()
 
-if len(filtered_words) <= 500:
-    print_result(sorted_words)
-    print('Общее количество слов:', sum(words_dict.values()))
-else:
-    print('Количество слов превышает 500. Результат можете посмотреть в файле "result.txt".')
+    filtered_words = frequency_thresholds(words_dict)
+    reverse_flag = selection_sorting()
+    # Если reverse_flag == True, то (-1)^1, т.е. сортировка производится по убыванию, иначе - по возрастанию
+    sorted_words = sorted(filtered_words, key=lambda w: ((-1) ** reverse_flag * w[1], w[0]))
 
-with open('result.txt', 'w', encoding='utf-8') as file:
-    print_result(sorted_words, file=file)
-    print(f'Общее количество слов: {sum(words_dict.values())}', file)
+    if len(filtered_words) <= 500:
+        print_result(sorted_words)
+        print('Общее количество слов:', sum(words_dict.values()))
+    else:
+        print('Количество слов превышает 500. Результат можете посмотреть в файле "result.txt".')
 
-top_words(sorted_words, reverse_flag)
+    with open('result.txt', 'w', encoding='utf-8') as file:
+        print_result(sorted_words, file=file)
+        print(f'Общее количество слов: {sum(words_dict.values())}', file=file)
+
+    top_words(sorted_words, reverse_flag)
