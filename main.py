@@ -6,9 +6,6 @@ import os
 from math import ceil
 
 
-TEMPLATE = re.compile(r'[^\d,\W]+[-]?\w*') # шаблон для поиска слов
-
-
 def words_count(lines: List[str], stop_words: List[str]) -> Dict[str, int]:
     """
     Заполняет словарь частоты слов в списке строк текста.
@@ -23,12 +20,13 @@ def words_count(lines: List[str], stop_words: List[str]) -> Dict[str, int]:
 
     result = {}
     chunk_size = ceil(len(lines) / 10)
+    template = re.compile(r"[a-zA-Zа-яА-Я]+[-]?[']?[a-zA-Zа-яА-Я]*")  # шаблон для поиска слов
 
     for start in range(0, len(lines), chunk_size):
         chunk = lines[start:start + chunk_size]
         # Объединяем строки, чтобы разом обрабатывать большее количество слов
         chunk_text = ' '.join(chunk).lower()
-        words_line = TEMPLATE.findall(chunk_text)
+        words_line = template.findall(chunk_text)
 
         for word in words_line:
             if word not in stop_words:
@@ -46,12 +44,15 @@ def print_result(sorted_list: List, file=None) -> None:
         file : если None, вывод происходит в консоль, иначе - в файл.
     """
 
-    print(f'{"_" * 37}', file=file)
-    print(f'|{"Слово":^25}| Частота |', file=file)
-    print(f'|{"-" * 25}|{"-" * 9}|', file=file)
+    # ищем самое длинное слово
+    len_word = max(map(lambda word: len(word[0]), sorted_list)) + 2
+
+    print(f'{"_" * (len_word + 12)}', file=file)
+    print(f'|{"Слово":^{len_word}}| Частота |', file=file)
+    print(f'|{"-" * len_word}|{"-" * 9}|', file=file)
     for word in sorted_list:
-        print(f'|{word[0]:^25}|{word[1]:^9}|', file=file)
-    print(f'{"¯" * 37}', file=file)
+        print(f'|{word[0]:^{len_word}}|{word[1]:^9}|', file=file)
+    print(f'{"¯" * (len_word + 12)}', file=file)
 
 
 def main_menu() -> Dict[str, int]:
@@ -99,10 +100,10 @@ def fill_stop_words() -> List[str]:
             while True:
                 stop_words = input('Введите стоп-слова через пробел: ')
 
-                control_check = re.findall(r'[^\d,\W]+[-]?\w*', stop_words)
+                control_check = re.findall(r"[a-zA-Zа-яА-Я]+[-]?[']?[a-zA-Zа-яА-Я]*", stop_words)
                 stop_words = stop_words.split()
 
-                # сравниваем списки, чтобы убедиться, то пользователь не ввел посторонние символы
+                # сравниваем списки, чтобы убедиться, что пользователь не ввел посторонние символы
                 if control_check == stop_words:
                     return stop_words
                 else:
@@ -185,6 +186,35 @@ def calculate_avg_line_size(file_path: str, num_samples: int = 100) -> int:
     return sum(sample_lines) // len(sample_lines)
 
 
+def parallel_processing(file_size: int, file_path: str, stop_words: List[str]) -> Dict[str, int]:
+    """
+    Разбивает файл на чанки и параллельно их обрабатывает.
+
+    Args:
+        file_size (int): размер файла.
+        file_path (str): путь к файлу.
+        stop_words (List[str]): список стоп-слов.
+
+    Returns:
+        Dict[str, int]: словарь частоты слов из файла.
+    """
+    avg_line_size = calculate_avg_line_size(file_path)
+
+    chunk_size = ceil(file_size / (40 * avg_line_size))
+    chunks = read_lines_chunks(file_path, chunk_size=chunk_size)
+    print('herre')
+    # Для передачи стоп-слов в функцию подсчета слов
+    process_with_stopwords = partial(process_chunk, stop_words=stop_words)
+
+    with ProcessPoolExecutor(max_workers=None) as executor:
+        # Параллельно обрабатываем чанки
+        results = list(executor.map(process_with_stopwords, chunks))
+
+    # Объединяем результаты
+    return merge_results(results)
+
+
+
 def load_file(stop_words: List[str]) -> Dict[str, int]:
     """
     Загружает текст из файла и подсчитывает частоту слов.
@@ -198,35 +228,23 @@ def load_file(stop_words: List[str]) -> Dict[str, int]:
 
     file_path = input('\nУкажите полный путь до файла в формате .txt: ')
     while not (os.path.isfile(os.path.abspath(file_path)) and file_path.endswith('.txt')):
-        # my_file = r'C:\TextAnalyzer\allpart_6.txt'
+        file_path = r'C:\TextAnalyzer\my_text.txt'
         print('Неверно указан путь до файла или нет к нему доступа. Повторите ввод!')
-        file_path = input('\nУкажите полный путь до файла .txt: ')
+        #file_path = input('\nУкажите полный путь до файла .txt: ')
 
     file_size = os.path.getsize(file_path)
     file_size_threshold = 5 * 1024 * 1024  # 5 MB
 
     # Если файл больше 5MB, то он разбивается на чанки и обрабатывает их параллельно
     if file_size > file_size_threshold:
-        avg_line_size = calculate_avg_line_size(file_path)
-        chunk_size = ceil(file_size / (40 * avg_line_size))
-        chunks = read_lines_chunks(file_path, chunk_size=chunk_size)
-
-        # Для передачи стоп-слов в функцию подсчета слов
-        process_with_stopwords = partial(process_chunk, stop_words=stop_words)
-
-        with ProcessPoolExecutor(max_workers=None) as executor:
-            # Параллельно обрабатываем чанки
-            results = list(executor.map(process_with_stopwords, chunks))
-
-        # Объединяем результаты
-        return merge_results(results)
+        result = parallel_processing(file_size, file_path, stop_words)
 
     else:
         with open(file_path, 'r', encoding='utf-8') as f:
             all_text = f.readlines()
         result = words_count(all_text, stop_words)
 
-        return result
+    return result
 
 
 def write_text(stop_words: List[str]) -> Dict[str, int]:
@@ -344,7 +362,8 @@ if __name__ == "__main__":
 
     filtered_words = frequency_thresholds(words_dict)
     reverse_flag = selection_sorting()
-    # Если reverse_flag == True, то (-1)^1, т.е. сортировка производится по убыванию, иначе - по возрастанию
+    # Если reverse_flag == True, то (-1)^1 == -1, т.е. сортировка производится по убыванию,
+    # иначе (-1)^0 == 1 - сортировка по возрастанию
     sorted_words = sorted(filtered_words, key=lambda w: ((-1) ** reverse_flag * w[1], w[0]))
 
     if len(filtered_words) <= 500:
