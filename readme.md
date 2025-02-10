@@ -31,7 +31,7 @@
 1. Клонируйте репозиторий:
 
 
-    git clone https://github.com/yourusername/TextAnalyzer.git
+    git clone https://github.com/MelKatya/TextAnalyzer.git
 
 
 ## Запуск
